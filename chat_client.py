@@ -11,16 +11,16 @@ SERVER_PORT = 5000
 
 #sending and receiving messages
 def send(channel, *args):
-    buffer = pickle.dumps(args)              #convert the message to bytes
-    value = socket.htonl(len(buffer))        #length in network byte order
-    size = struct.pack("L", value)           #length as header bytes
+    buffer = pickle.dumps(args) #convert the message to bytes
+    value = socket.htonl(len(buffer)) #length in network byte order
+    size = struct.pack("L", value) #length as header bytes
     channel.send(size)
     channel.send(buffer)
 
 def receive(channel):
     try:
-        size_data = channel.recv(struct.calcsize("L"))           #read the header
-        size = socket.ntohl(struct.unpack("L", size_data)[0])    #bytes to expect
+        size_data = channel.recv(struct.calcsize("L")) #read the header
+        size = socket.ntohl(struct.unpack("L", size_data)[0]) #bytes to expect
         buf = b""
         while len(buf) < size:
             chunk = channel.recv(size - len(buf))
@@ -35,6 +35,7 @@ def receive(channel):
 class ChatClient:
     def __init__(self, name, host, port):
         self.connected = False
+        self.users = [] #current user list, kept up to date by the server
         #connect to the server and send the registration message
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -43,14 +44,21 @@ class ChatClient:
         except socket.error:
             print("Failed to connect to chat server @ {}:{}".format(host, port))
             sys.exit(1)
-        #wait for the server's answer"
+        #wait for the server's answer
         data = receive(self.sock)
+        #the server rejected our nickname, show the reason and quit
+        if isinstance(data, str) and data.startswith('ERROR: '):
+            print("Registration failed: " + data[len('ERROR: '):])
+            self.sock.close()
+            sys.exit(1)
         if not isinstance(data, str) or not data.startswith('NICK: '):
             print("Registration failed.")
             self.sock.close()
             sys.exit(1)
         #server may have changed our nickname, so use the one it assigned
         self.name = data[len('NICK: '):]
+        if self.name != name.strip():
+            print("Nickname '{}' is taken, you are '{}'".format(name.strip(), self.name))
         self.prompt = '[' + self.name + ']> '
         self.connected = True
         print("Now connected to chat server @ {}:{} as {}".format(host, port, self.name))
@@ -66,7 +74,11 @@ class ChatClient:
                     self.sock.close()
                     break
                 line = line.strip()
-                if line:
+                if line == '/users':
+                    print("Users online ({}): {}".format(len(self.users), ', '.join(self.users)))
+                    sys.stdout.write(self.prompt)
+                    sys.stdout.flush()
+                elif line:
                     try:
                         send(self.sock, 'PUBLIC: ' + line)   #send as a public message
                     except OSError:
@@ -84,6 +96,10 @@ class ChatClient:
                     if self.connected:
                         print("\nConnection to the server was lost.")
                     break
+                #user list updates are stored, not printed
+                if isinstance(data, str) and data.startswith('USERS: '):
+                    self.users = data[len('USERS: '):].split(',')
+                    continue
                 print("\n" + str(data))
                 sys.stdout.write(self.prompt)
                 sys.stdout.flush()
