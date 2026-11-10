@@ -1,0 +1,4 @@
+venv/
+__pycache__/
+*.log
+project02.*.png
