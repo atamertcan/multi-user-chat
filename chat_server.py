@@ -7,9 +7,12 @@ import time
 
 SERVER_HOST = 'localhost'
 SERVER_PORT = 5000
-LOG_FILE = 'chat_server.log' #default log file
+LOG_FILE = 'chat_server.log'
 CLIENT_TIMEOUT = 5 #max seconds a client may stall in the middle of a message
 MAX_MESSAGE_SIZE = 4096 #max bytes accepted in one message. mostly enough for long messages
+RATE_LIMIT = 5 #message rate limit
+RATE_WINDOW = 10 #to measure time
+MUTE_TIME = 10 #user will be silenced for 10sec if it hits rate limit
 
 
 #sending and receiving messages
@@ -42,8 +45,9 @@ def receive(channel):
 class ChatServer:
     def __init__(self, host, port, logfile, backlog=5):
         self.clientmap = {} #client socket -> (address, nickname)
-        self.logfile = logfile #text file where messages and events are written
-        self.message_count = 0 #public/private messages processed by the server
+        self.logfile = logfile
+        self.message_count = 0
+        self.ratemap = {} #client socket -> [window start, message count, muted until]
         # Listening socket: only accepts new connections, carries no chat data
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -54,7 +58,7 @@ class ChatServer:
     def timestamp(self):
         return time.strftime("%H:%M:%S")
 
-    #write one line to the log file: date time | type | details
+    #write one line to the log file
     def log(self, kind, details):
         line = "{} | {} | {}".format(time.strftime("%Y-%m-%d %H:%M:%S"), kind, details)
         try:
@@ -132,11 +136,36 @@ class ChatServer:
     #remove a client, close its socket and tell the others
     def remove_client(self, sock):
         nickname = self.clientmap.pop(sock)[1] #[1] = nickname in the tuple
+        self.ratemap.pop(sock, None) #forget its rate limit record
         sock.close()
         print("Chat server: {} disconnected".format(nickname))
         self.log("DISCONNECT", nickname)
         self.broadcast("[{}] * {} left the chat".format(self.timestamp(), nickname))
         self.send_user_list()
+
+    #checks rate limit for each user message, return True if the user may send a message now, False if it is rate limited
+    def check_rate_limit(self, sock):
+        nickname = self.clientmap[sock][1]
+        now = time.time()
+        if sock not in self.ratemap: #first message of this user
+            self.ratemap[sock] = [now, 0, 0]
+        record = self.ratemap[sock]
+        if now < record[2]: #still muted, tell the user how long
+            left = int(record[2] - now) + 1
+            self.send_to(sock, "[{}] * You are muted, try again in {} seconds".format(self.timestamp(), left))
+            return False
+        if now - record[0] >= RATE_WINDOW: #the old window is over, start a new one
+            record[0] = now
+            record[1] = 0
+        record[1] += 1
+        if record[1] > RATE_LIMIT: #too many messages in this window, mute the user
+            record[0] = now + MUTE_TIME #a fresh window starts when the mute ends
+            record[1] = 0
+            record[2] = now + MUTE_TIME
+            self.send_to(sock, "[{}] * Rate limit exceeded (max {} messages in {} seconds), you are muted for {} seconds".format(self.timestamp(), RATE_LIMIT, RATE_WINDOW, MUTE_TIME))
+            self.log("RATE_LIMIT", "{} muted for {} seconds (more than {} messages in {} seconds)".format(nickname, MUTE_TIME, RATE_LIMIT, RATE_WINDOW))
+            return False
+        return True
 
     #handle a message coming from a registered client
     def handle_client(self, sock):
@@ -145,6 +174,10 @@ class ChatServer:
             self.remove_client(sock)
             return
         nickname = self.clientmap[sock][1]
+        #public and private messages are rate limited per user
+        if isinstance(data, str) and (data.startswith('PUBLIC: ') or data.startswith('PRIVATE: ')):
+            if not self.check_rate_limit(sock):
+                return
         if isinstance(data, str) and data.startswith('PUBLIC: '):
             text = data[len('PUBLIC: '):]
             if text.strip() == '':
