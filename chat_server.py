@@ -7,6 +7,7 @@ import time
 
 SERVER_HOST = 'localhost'
 SERVER_PORT = 5000
+LOG_FILE = 'chat_server.log' #default log file
 CLIENT_TIMEOUT = 5 #max seconds a client may stall in the middle of a message
 MAX_MESSAGE_SIZE = 4096 #max bytes accepted in one message. mostly enough for long messages
 
@@ -39,8 +40,10 @@ def receive(channel):
 
 #chat server using select
 class ChatServer:
-    def __init__(self, host, port, backlog=5):
+    def __init__(self, host, port, logfile, backlog=5):
         self.clientmap = {} #client socket -> (address, nickname)
+        self.logfile = logfile #text file where messages and events are written
+        self.message_count = 0 #public/private messages processed by the server
         # Listening socket: only accepts new connections, carries no chat data
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -50,6 +53,15 @@ class ChatServer:
 
     def timestamp(self):
         return time.strftime("%H:%M:%S")
+
+    #write one line to the log file: date time | type | details
+    def log(self, kind, details):
+        line = "{} | {} | {}".format(time.strftime("%Y-%m-%d %H:%M:%S"), kind, details)
+        try:
+            with open(self.logfile, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError as e:
+            print("Could not write to the log file: {}".format(e))
 
     #send a message separately to every connected user (sender included)
     def broadcast(self, message):
@@ -77,6 +89,7 @@ class ChatServer:
     #tell the client why it was rejected and close the connection
     def reject(self, client, reason):
         print("Rejected registration: {}".format(reason))
+        self.log("ERROR", "registration rejected: {}".format(reason))
         try:
             send(client, 'ERROR: ' + reason)
         except OSError:
@@ -91,6 +104,7 @@ class ChatServer:
         data = receive(client)
         if not isinstance(data, str) or not data.startswith('NAME: '):
             print("Rejected bad registration from {}".format(address))
+            self.log("ERROR", "bad registration from {}".format(address))
             client.close()
             return
         nickname = data[len('NAME: '):].strip()
@@ -111,6 +125,7 @@ class ChatServer:
             return
         self.clientmap[client] = (address, nickname) #register the client
         print("Chat server: {} connected from {}".format(nickname, address))
+        self.log("CONNECT", "{} {}".format(nickname, address))
         self.broadcast("[{}] * {} joined the chat".format(self.timestamp(), nickname))
         self.send_user_list()
 
@@ -119,6 +134,7 @@ class ChatServer:
         nickname = self.clientmap.pop(sock)[1] #[1] = nickname in the tuple
         sock.close()
         print("Chat server: {} disconnected".format(nickname))
+        self.log("DISCONNECT", nickname)
         self.broadcast("[{}] * {} left the chat".format(self.timestamp(), nickname))
         self.send_user_list()
 
@@ -128,17 +144,21 @@ class ChatServer:
         if data is None: #connection lost or bad data
             self.remove_client(sock)
             return
+        nickname = self.clientmap[sock][1]
         if isinstance(data, str) and data.startswith('PUBLIC: '):
             text = data[len('PUBLIC: '):]
             if text.strip() == '':
                 self.send_to(sock, "[{}] * Error: message text cannot be empty".format(self.timestamp()))
+                self.log("ERROR", "empty message from {}".format(nickname))
             else:
-                nickname = self.clientmap[sock][1]
                 self.broadcast("[{}] {}: {}".format(self.timestamp(), nickname, text))
+                self.message_count += 1 #counted once, however many users receive it
+                self.log("PUBLIC", "{} -> ALL | {}".format(nickname, text))
         elif isinstance(data, str) and data.startswith('PRIVATE: '):
             self.handle_private(sock, data[len('PRIVATE: '):])
         else: #unknown message type
             self.send_to(sock, "[{}] * Error: unknown message type".format(self.timestamp()))
+            self.log("ERROR", "unknown message type from {}".format(nickname))
 
     #send a message to one client only
     #we're defining new func for send becuase we need to know if delivery has been done, send func won't ensures this
@@ -156,6 +176,7 @@ class ChatServer:
         parts = content.split(' ', 1) #split it at first space
         if len(parts) < 2 or parts[1].strip() == '':
             self.send_to(sock, "[{}] * Usage: /msg nickname message".format(self.timestamp()))
+            self.log("ERROR", "invalid private message format from {}".format(sender))
             return
         target_name = parts[0]
         text = parts[1].strip()
@@ -166,12 +187,16 @@ class ChatServer:
                 target = client
         if target is None:
             self.send_to(sock, "[{}] * Error: user '{}' is not connected".format(self.timestamp(), target_name))
+            self.log("ERROR", "private message from {} failed, {} is not connected".format(sender, target_name))
             return
         receiver = self.clientmap[target][1] #to get real nickname
         if self.send_to(target, "[{}] [PRIVATE] {}: {}".format(self.timestamp(), sender, text)):
             self.send_to(sock, "[{}] [PRIVATE] you -> {}: {}".format(self.timestamp(), receiver, text))
+            self.message_count += 1 #only delivered messages are counted
+            self.log("PRIVATE", "{} -> {} | {}".format(sender, receiver, text))
         else:
             self.send_to(sock, "[{}] * Error: could not deliver the message to '{}'".format(self.timestamp(), receiver))
+            self.log("ERROR", "private message from {} to {} could not be delivered".format(sender, receiver))
 
     #handle whichever socket has data
     def run(self):
@@ -191,6 +216,7 @@ class ChatServer:
                     except Exception as e:
                         #an unexpected error caused by one client must not stop the server
                         print("Error: {}".format(e))
+                        self.log("ERROR", "unexpected error: {}".format(e))
                         if sock in self.clientmap:
                             self.remove_client(sock)
         except KeyboardInterrupt:
@@ -206,7 +232,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Chat Server')
     parser.add_argument('--host', default=SERVER_HOST, help='IP address to listen on')
     parser.add_argument('--port', type=int, default=SERVER_PORT, help='TCP chat port')
+    parser.add_argument('--log', default=LOG_FILE, help='log file')
     args = parser.parse_args()
 
-    server = ChatServer(args.host, args.port)
+    server = ChatServer(args.host, args.port, args.log)
     server.run()
