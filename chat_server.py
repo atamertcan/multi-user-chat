@@ -63,10 +63,10 @@ class ChatServer:
 
     #return the nickname or nickname + number if it is already taken
     def make_unique(self, nickname):
-        taken = [info[1].lower() for info in self.clientmap.values()]
+        taken = [info[1] for info in self.clientmap.values()]
         new_name = nickname
         count = 1
-        while new_name.lower() in taken:
+        while new_name in taken:
             new_name = nickname + str(count)
             count += 1
         return new_name
@@ -126,6 +126,39 @@ class ChatServer:
             text = data[len('PUBLIC: '):]
             nickname = self.clientmap[sock][1]
             self.broadcast("[{}] {}: {}".format(self.timestamp(), nickname, text))
+        elif isinstance(data, str) and data.startswith('PRIVATE: '):
+            self.handle_private(sock, data[len('PRIVATE: '):])
+
+    #send a message to one client only
+    def send_to(self, sock, message):
+        try:
+            send(sock, message)
+            return True
+        except OSError:
+            return False
+
+    #deliver a private message only to the recipient
+    def handle_private(self, sock, content):
+        sender = self.clientmap[sock][1]
+        parts = content.split(' ', 1) #split it at first space
+        if len(parts) < 2 or parts[1].strip() == '':
+            self.send_to(sock, "[{}] * Usage: /msg nickname message".format(self.timestamp()))
+            return
+        target_name = parts[0]
+        text = parts[1].strip()
+        #find the recipient's socket by nickname
+        target = None
+        for client, info in self.clientmap.items():
+            if info[1] == target_name:
+                target = client
+        if target is None:
+            self.send_to(sock, "[{}] * Error: user '{}' is not connected".format(self.timestamp(), target_name))
+            return
+        receiver = self.clientmap[target][1] #to get real nickname
+        if self.send_to(target, "[{}] [PRIVATE] {}: {}".format(self.timestamp(), sender, text)):
+            self.send_to(sock, "[{}] [PRIVATE] you -> {}: {}".format(self.timestamp(), receiver, text))
+        else:
+            self.send_to(sock, "[{}] * Error: could not deliver the message to '{}'".format(self.timestamp(), receiver))
 
     #handle whichever socket has data
     def run(self):

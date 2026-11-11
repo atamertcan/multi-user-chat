@@ -78,6 +78,18 @@ class ChatClient:
                     print("Users online ({}): {}".format(len(self.users), ', '.join(self.users)))
                     sys.stdout.write(self.prompt)
                     sys.stdout.flush()
+                elif line == '/msg' or line.startswith('/msg '):
+                    #/msg nickname message -> sent as "PRIVATE: nickname message"
+                    parts = line[len('/msg '):].strip().split(' ', 1)
+                    if len(parts) < 2 or parts[1].strip() == '':
+                        print("Usage: /msg nickname message")
+                        sys.stdout.write(self.prompt)
+                        sys.stdout.flush()
+                    else:
+                        try:
+                            send(self.sock, 'PRIVATE: ' + parts[0] + ' ' + parts[1].strip())
+                        except OSError:
+                            break
                 elif line:
                     try:
                         send(self.sock, 'PUBLIC: ' + line)   #send as a public message
