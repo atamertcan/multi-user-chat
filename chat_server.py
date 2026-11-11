@@ -8,6 +8,7 @@ import time
 SERVER_HOST = 'localhost'
 SERVER_PORT = 5000
 CLIENT_TIMEOUT = 5 #max seconds a client may stall in the middle of a message
+MAX_MESSAGE_SIZE = 4096 #max bytes accepted in one message. mostly enough for long messages
 
 
 #sending and receiving messages
@@ -19,11 +20,13 @@ def send(channel, *args):
     channel.send(size)
     channel.send(buffer)
 
-#read one message. Return None if the connection is lost or data is bad
+#read one message
 def receive(channel):
     try:
         size_data = channel.recv(struct.calcsize("L")) #read the header
         size = socket.ntohl(struct.unpack("L", size_data)[0]) #bytes to expect
+        if size > MAX_MESSAGE_SIZE: #too big, treat it as bad data
+            return None
         buf = b""
         while len(buf) < size:
             chunk = channel.recv(size - len(buf))
@@ -102,9 +105,12 @@ class ChatServer:
             self.reject(client, 'Nickname cannot contain spaces or commas')
             return
         nickname = self.make_unique(nickname) #add a number if the name is taken
+        #tell the client its nickname first, if this fails the client is already gone
+        if not self.send_to(client, 'NICK: ' + nickname):
+            client.close()
+            return
         self.clientmap[client] = (address, nickname) #register the client
         print("Chat server: {} connected from {}".format(nickname, address))
-        send(client, 'NICK: ' + nickname)
         self.broadcast("[{}] * {} joined the chat".format(self.timestamp(), nickname))
         self.send_user_list()
 
@@ -124,12 +130,19 @@ class ChatServer:
             return
         if isinstance(data, str) and data.startswith('PUBLIC: '):
             text = data[len('PUBLIC: '):]
-            nickname = self.clientmap[sock][1]
-            self.broadcast("[{}] {}: {}".format(self.timestamp(), nickname, text))
+            if text.strip() == '':
+                self.send_to(sock, "[{}] * Error: message text cannot be empty".format(self.timestamp()))
+            else:
+                nickname = self.clientmap[sock][1]
+                self.broadcast("[{}] {}: {}".format(self.timestamp(), nickname, text))
         elif isinstance(data, str) and data.startswith('PRIVATE: '):
             self.handle_private(sock, data[len('PRIVATE: '):])
+        else: #unknown message type
+            self.send_to(sock, "[{}] * Error: unknown message type".format(self.timestamp()))
 
     #send a message to one client only
+    #we're defining new func for send becuase we need to know if delivery has been done, send func won't ensures this
+    #it returns true if it delivers successfully otherwise we get false, we use these situations
     def send_to(self, sock, message):
         try:
             send(sock, message)
@@ -168,11 +181,18 @@ class ChatServer:
                 inputs = [self.server] + list(self.clientmap)
                 #wait for sockets with data. 1s timeout
                 readable, writeable, exceptional = select.select(inputs, [], [], 1.0)
+                #try-except for each socket
                 for sock in readable:
-                    if sock == self.server:
-                        self.accept_client() #someone wants to connect
-                    else:
-                        self.handle_client(sock) #client sent a message
+                    try:
+                        if sock == self.server:
+                            self.accept_client() #someone wants to connect
+                        else:
+                            self.handle_client(sock) #client sent a message
+                    except Exception as e:
+                        #an unexpected error caused by one client must not stop the server
+                        print("Error: {}".format(e))
+                        if sock in self.clientmap:
+                            self.remove_client(sock)
         except KeyboardInterrupt:
             print("\nShutting down server...")
         finally:
