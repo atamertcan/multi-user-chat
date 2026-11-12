@@ -4,10 +4,13 @@ import pickle
 import struct
 import argparse
 import time
+import monitor
 
 SERVER_HOST = 'localhost'
 SERVER_PORT = 5000
 LOG_FILE = 'chat_server.log'
+HTTP_PORT = 8000 #port of the monitoring page
+WS_PORT = 8765 #port of the monitoring WebSocket
 CLIENT_TIMEOUT = 5 #max seconds a client may stall in the middle of a message
 MAX_MESSAGE_SIZE = 4096 #max bytes accepted in one message. mostly enough for long messages
 RATE_LIMIT = 5 #message rate limit
@@ -66,6 +69,8 @@ class ChatServer:
                 f.write(line + "\n")
         except OSError as e:
             print("Could not write to the log file: {}".format(e))
+        #the same line goes to the monitoring page, with the current numbers
+        monitor.send_event(line, len(self.clientmap), self.message_count)
 
     #send a message separately to every connected user (sender included)
     def broadcast(self, message):
@@ -266,7 +271,10 @@ if __name__ == '__main__':
     parser.add_argument('--host', default=SERVER_HOST, help='IP address to listen on')
     parser.add_argument('--port', type=int, default=SERVER_PORT, help='TCP chat port')
     parser.add_argument('--log', default=LOG_FILE, help='log file')
+    parser.add_argument('--http-port', type=int, default=HTTP_PORT, help='monitoring page (HTTP) port')
+    parser.add_argument('--ws-port', type=int, default=WS_PORT, help='monitoring WebSocket port')
     args = parser.parse_args()
 
+    monitor.start_monitor(args.host, args.http_port, args.ws_port) #runs in separate threads
     server = ChatServer(args.host, args.port, args.log)
     server.run()

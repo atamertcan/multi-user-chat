@@ -5,6 +5,34 @@
   <title>Chat Server Monitor</title>
 </head>
 <body>
-  <!-- Faz 7'de doldurulacak -->
+  <h1>Chat Server Monitor</h1>
+  <p>Connection: <span id="status">connecting...</span></p>
+  <p>Chat users: <span id="users">0</span> | Processed messages: <span id="messages">0</span></p>
+  <div id="output"></div>
+
+  <script>
+    //the WebSocket port is 8765 unless the page is opened like monitor?ws=9000
+    const wsPort = new URLSearchParams(location.search).get("ws") || "8765";
+    const ws = new WebSocket("ws://" + location.hostname + ":" + wsPort);
+    const status = document.getElementById("status");
+    const users = document.getElementById("users");
+    const messages = document.getElementById("messages");
+    const output = document.getElementById("output");
+
+    ws.onopen = () => { status.textContent = "connected"; };
+    ws.onclose = () => { status.textContent = "disconnected"; };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      users.textContent = data.users;
+      messages.textContent = data.messages;
+      if (data.text) {
+        const div = document.createElement("div");
+        div.textContent = data.text; //textContent, so chat text is never run as HTML
+        output.appendChild(div);
+        window.scrollTo(0, document.body.scrollHeight); //newest event stays visible
+      }
+    };
+  </script>
 </body>
 </html>
