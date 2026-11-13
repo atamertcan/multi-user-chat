@@ -16,7 +16,7 @@ Python TCP clients chat through a TCP server with public and private messages. A
 
 ## Installation
 
-Python 3 is required (tested with Python 3.13.7 on Windows 11). The only dependency is `websockets==17.4`
+Python 3.11 or newer is required (tested with Python 3.13.7 on Windows 11). The only dependency is `websockets==17.4`
 (everything else is the standard library).
 
 ```bash
@@ -101,7 +101,7 @@ a client that connects directly never has one. Authentication is not used.
 
 ### Message format and framing
 
-TCP has no message boundaries, so every message is sent as a **4-byte length header** (network byte order) followed by
+TCP has no message boundaries, so every message is sent as a **length header** (`struct` format `L`, 4 bytes on Windows, network byte order) followed by
 the message. The message is a Python `str` serialized with `pickle`, so text is Unicode; the log file is written as UTF-8.
 The receiver reads the header, then reads exactly that many bytes (a loop handles messages that arrive in pieces).
 The **maximum accepted message size is 4096 bytes**, a larger message is treated as bad data and the connection is closed.
@@ -164,7 +164,7 @@ The same lines are sent to the monitoring page.
 ### Known limits
 
 - Messages larger than 4096 bytes are not accepted.
-- The 4-byte length header is read with one `recv` call, which is fine on `localhost` but not guaranteed on a real network.
+- The length header is read with one `recv` call, which is fine on `localhost` but not guaranteed on a real network.
 - `pickle` must not be used with untrusted clients.
 
 ## Tests
