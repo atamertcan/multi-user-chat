@@ -8,6 +8,7 @@ import monitor
 
 SERVER_HOST = 'localhost'
 SERVER_PORT = 5000
+RELAY_PORT = 5001 #port where the relay connects to the chat server
 LOG_FILE = 'chat_server.log'
 HTTP_PORT = 8000 #port of the monitoring page
 WS_PORT = 8765 #port of the monitoring WebSocket
@@ -46,7 +47,7 @@ def receive(channel):
 
 #chat server using select
 class ChatServer:
-    def __init__(self, host, port, logfile, backlog=5):
+    def __init__(self, host, port, logfile, relay_port=None, backlog=5):
         self.clientmap = {} #client socket -> (address, nickname)
         self.logfile = logfile
         self.message_count = 0
@@ -57,6 +58,14 @@ class ChatServer:
         self.server.bind((host, port))
         self.server.listen(backlog)
         print("Server listening on {}:{} ...".format(host, port))
+        #second listening socket for the relay, only the relay may register names starting with *
+        self.relay_server = None
+        if relay_port is not None:
+            self.relay_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.relay_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.relay_server.bind((host, relay_port))
+            self.relay_server.listen(backlog)
+            print("Relay port listening on {}:{} ...".format(host, relay_port))
 
     def timestamp(self):
         return time.strftime("%H:%M:%S")
@@ -106,8 +115,9 @@ class ChatServer:
         client.close()
 
     #accept a new connection and process its registration message
-    def accept_client(self):
-        client, address = self.server.accept()
+    def accept_client(self, listener):
+        client, address = listener.accept()
+        from_relay = (listener == self.relay_server) #connections on the relay port come from the relay
         #a client that sends nothing must not freeze the whole server
         client.settimeout(CLIENT_TIMEOUT)
         data = receive(client)
@@ -120,8 +130,12 @@ class ChatServer:
         if nickname == '':
             self.reject(client, 'Nickname cannot be empty')
             return
-        #* is reserved for the relay
-        if nickname.startswith('*'):
+        if from_relay:
+            #the relay adds a * in front of every name
+            if not nickname.startswith('*') or nickname == '*':
+                self.reject(client, 'Relay nicknames must start with *')
+                return
+        elif nickname.startswith('*'): #* is reserved for the relay
             self.reject(client, 'Nickname cannot start with *')
             return
         if ' ' in nickname or ',' in nickname:
@@ -242,17 +256,17 @@ class ChatServer:
             while True:
                 #sockets to watch: the listening socket + all connected clients
                 inputs = [self.server] + list(self.clientmap)
+                if self.relay_server:
+                    inputs.append(self.relay_server) #the relay port is watched too
                 #wait for sockets with data. 1s timeout
                 readable, writeable, exceptional = select.select(inputs, [], [], 1.0)
-                #try-except for each socket
                 for sock in readable:
                     try:
-                        if sock == self.server:
-                            self.accept_client() #someone wants to connect
+                        if sock == self.server or sock == self.relay_server:
+                            self.accept_client(sock) #someone wants to connect
                         else:
                             self.handle_client(sock) #client sent a message
                     except Exception as e:
-                        #an unexpected error caused by one client must not stop the server
                         print("Error: {}".format(e))
                         self.log("ERROR", "unexpected error: {}".format(e))
                         if sock in self.clientmap:
@@ -264,6 +278,8 @@ class ChatServer:
             for sock in list(self.clientmap):
                 sock.close()
             self.server.close()
+            if self.relay_server:
+                self.relay_server.close()
 
 
 if __name__ == '__main__':
@@ -271,10 +287,11 @@ if __name__ == '__main__':
     parser.add_argument('--host', default=SERVER_HOST, help='IP address to listen on')
     parser.add_argument('--port', type=int, default=SERVER_PORT, help='TCP chat port')
     parser.add_argument('--log', default=LOG_FILE, help='log file')
+    parser.add_argument('--relay-port', type=int, default=RELAY_PORT, help='port for the relay (relayed users get a * prefix)')
     parser.add_argument('--http-port', type=int, default=HTTP_PORT, help='monitoring page (HTTP) port')
     parser.add_argument('--ws-port', type=int, default=WS_PORT, help='monitoring WebSocket port')
     args = parser.parse_args()
 
     monitor.start_monitor(args.host, args.http_port, args.ws_port) #runs in separate threads
-    server = ChatServer(args.host, args.port, args.log)
+    server = ChatServer(args.host, args.port, args.log, args.relay_port)
     server.run()

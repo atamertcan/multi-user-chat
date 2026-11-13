@@ -58,7 +58,7 @@ class ChatClient:
         #server may have changed our nickname, so use the one it assigned
         self.name = data[len('NICK: '):]
         if self.name != name.strip():
-            print("Nickname '{}' is taken, you are '{}'".format(name.strip(), self.name))
+            print("Nickname '{}' was changed by the server, you are '{}'".format(name.strip(), self.name))
         self.prompt = '[' + self.name + ']> '
         self.connected = True
         print("Now connected to chat server @ {}:{} as {}".format(host, port, self.name))
